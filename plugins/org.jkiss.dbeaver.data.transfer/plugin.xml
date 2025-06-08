@@ -116,6 +116,20 @@
                     <property id="extension" label="%dataTransfer.processor.json.property.extension.label" defaultValue="json"/>
                 </propertyGroup>
             </processor>
+            <!-- GeoJSON -->
+            <processor
+                id="stream.geojson"
+                class="org.jkiss.dbeaver.tools.transfer.stream.exporter.DataExporterGeoJSON"
+                description="Export as GeoJSON FeatureCollection"
+                icon="icons/formats/json.png"
+                label="GeoJSON"
+                contentType="application/geo+json">
+                <propertyGroup label="General">
+                    <property id="printTableName" label="Print Table Name" type="boolean" defaultValue="true"/>
+                    <property id="extension" label="File extension" defaultValue="geojson"/>
+                </propertyGroup>
+            </processor>
+
             <processor
                     id="stream.html"
                     class="org.jkiss.dbeaver.tools.transfer.stream.exporter.DataExporterHTML"
