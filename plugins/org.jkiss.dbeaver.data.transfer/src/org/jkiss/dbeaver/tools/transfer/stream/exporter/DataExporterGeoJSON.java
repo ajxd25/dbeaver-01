@@ -1,25 +1,25 @@
 package org.jkiss.dbeaver.tools.transfer.stream.exporter;
 
 import org.jkiss.code.NotNull;
-import org.jkiss.code.Nullable;
 import org.jkiss.dbeaver.DBException;
-import org.jkiss.dbeaver.model.DBPDataKind;
 import org.jkiss.dbeaver.model.DBUtils;
 import org.jkiss.dbeaver.model.data.DBDAttributeBinding;
 import org.jkiss.dbeaver.model.data.json.JSONUtils;
 import org.jkiss.dbeaver.model.exec.DBCResultSet;
 import org.jkiss.dbeaver.model.exec.DBCSession;
 import org.jkiss.dbeaver.model.runtime.DBRProgressMonitor;
+import org.jkiss.dbeaver.model.struct.DBSTypedObject;
+import org.jkiss.dbeaver.model.data.DBDContent;
+import org.jkiss.dbeaver.model.data.DBDContentStorage;
+import org.jkiss.dbeaver.model.DBPDataKind;
 import org.jkiss.dbeaver.tools.transfer.stream.IStreamDataExporterSite;
 import org.jkiss.utils.CommonUtils;
 
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.io.Reader;
 import java.util.Locale;
 
-/**
- * GeoJSON Exporter with improved error handling and performance.
- */
 public class DataExporterGeoJSON extends StreamExporterAbstract {
 
     public static final String PROP_PRINT_TABLE_NAME = "printTableName";
@@ -85,12 +85,23 @@ public class DataExporterGeoJSON extends StreamExporterAbstract {
         if (DBUtils.isNullValue(geomValue)) {
             writeNullFeature(out);
         } else {
-            String geoJson = CommonUtils.toString(geomValue);
+            String geometryString = CommonUtils.toString(geomValue).trim();
+            String geoJson;
+
+            if (!geometryString.startsWith("{")) {
+                // Handle WKT
+                String coords = convertWKTtoCoordinates(geometryString);
+                geoJson = inferGeometryFromCoordinates(coords);
+            } else {
+                // Handle embedded GeoJSON
+                String coords = extractCoordinatesFromJson(geometryString);
+                geoJson = inferGeometryFromCoordinates(coords);
+            }
 
             out.write("    {\n");
-            out.write("      \"type\": \"Feature\",\n");
-            out.write("      \"geometry\": " + geoJson + ",\n");
-            out.write("      \"properties\": {\n");
+            out.write("      \"type\":\"Feature\",\n");
+            out.write("      \"geometry\":" + geoJson + ",\n");
+            out.write("      \"properties\":{\n");
             writeProperties(out, row, geomIdx);
             out.write("\n      }\n");
             out.write("    }");
@@ -98,12 +109,11 @@ public class DataExporterGeoJSON extends StreamExporterAbstract {
     }
 
     private void writeNullFeature(PrintWriter out) {
-        out.write("    { \"type\": \"Feature\", \"geometry\": null, \"properties\": {} }");
+        out.write("    {\"type\":\"Feature\",\"geometry\":null,\"properties\":{}}");
     }
 
     private void writeProperties(PrintWriter out, Object[] row, int skipIndex) {
         boolean firstProp = true;
-
         for (int i = 0; i < columns.length; i++) {
             if (i == skipIndex) continue;
 
@@ -111,12 +121,10 @@ public class DataExporterGeoJSON extends StreamExporterAbstract {
             Object val = row[i];
             String key = JSONUtils.escapeJsonString(col.getName());
 
-            if (!firstProp) {
-                out.write(",\n");
-            }
+            if (!firstProp) out.write(",\n");
             firstProp = false;
 
-            out.write("        \"" + key + "\": ");
+            out.write("        \"" + key + "\":");
             if (DBUtils.isNullValue(val)) {
                 out.write("null");
             } else if (val instanceof Number || val instanceof Boolean) {
@@ -146,4 +154,100 @@ public class DataExporterGeoJSON extends StreamExporterAbstract {
         PrintWriter out = getWriter();
         out.write("\n  ]\n}\n");
     }
+
+    // ------------------- Utility Methods -----------------------
+
+    private String inferGeometryFromCoordinates(String rawCoords) {
+        String coords = rawCoords.trim().replaceAll("\\s+", "");
+        try {
+            int depth = getArrayDepth(coords);
+
+            switch (depth) {
+                case 1:
+                    return "{\"type\":\"Point\",\"coordinates\":" + coords + "}";
+                case 2:
+                    return "{\"type\": \"LineString\",\"coordinates\":" + coords + "}";
+                case 3:
+                    if (isClosedPolygon(coords)) {
+                        return "{\"type\":\"Polygon\",\"coordinates\":" + coords + "}";
+                    } 
+                    // else {
+                    //     return "{ \"type\": \"MultiPolygon\", \"coordinates\": " + coords + " }";
+                    // }
+                case 4:
+                    return "{\"type\":\"MultiPolygon\",\"coordinates\":" + coords + "}";
+                default:
+                    return "null";
+            }
+        } catch (Exception e) {
+            return "null";
+        }
+    }
+
+    private int getArrayDepth(String coord) {
+        int maxDepth = 0, depth = 0;
+        for (char c : coord.toCharArray()) {
+            if (c == '[') {
+                depth++;
+                maxDepth = Math.max(maxDepth, depth);
+            } else if (c == ']') {
+                depth--;
+            }
+        }
+        return maxDepth;
+    }
+
+    private boolean isClosedPolygon(String coords) {
+        try {
+            if (!coords.startsWith("[[[") || !coords.endsWith("]]]")) return false;
+
+            String trimmed = coords.substring(1, coords.length() - 1); // remove outer []
+            String[] rings = trimmed.split("\\],\\[");
+            if (rings.length == 0) return false;
+
+            String first = rings[0].replaceAll("[\\[\\]]", "");
+            String last = rings[rings.length - 1].replaceAll("[\\[\\]]", "");
+            return first.equals(last);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private String extractCoordinatesFromJson(String geoJsonStr) {
+        int coordIdx = geoJsonStr.indexOf("\"coordinates\"");
+        if (coordIdx < 0) return geoJsonStr;
+
+        int start = geoJsonStr.indexOf('[', coordIdx);
+        int end = geoJsonStr.lastIndexOf(']');
+        return geoJsonStr.substring(start, end + 1);
+    }
+
+    private String convertWKTtoCoordinates(String wkt) {
+        wkt = wkt.trim().toUpperCase();
+        int startIdx = wkt.indexOf('(');
+        if (startIdx == -1) return "[]";
+
+        String coordPart = wkt.substring(startIdx);
+        coordPart = coordPart.replace("(", "[").replace(")", "]");
+        coordPart = coordPart.replaceAll(",\\s*", "],[");
+        coordPart = coordPart.replaceAll("([0-9])\\s+([0-9])", "$1,$2");
+
+        if (wkt.startsWith("MULTIPOLYGON")) {
+            // Ensure 4-level nesting
+            if (!coordPart.startsWith("[[[[")) {
+                coordPart = "[" + coordPart + "]";
+            }
+        } else if (wkt.startsWith("POLYGON")) {
+            // Ensure 3-level nesting
+            if (!coordPart.startsWith("[[["))
+                coordPart = "[" + coordPart + "]";
+        } else if (wkt.startsWith("MULTILINESTRING") || wkt.startsWith("MULTIPOINT")) {
+            // Wrap with extra []
+            if (!coordPart.startsWith("[["))
+                coordPart = "[" + coordPart + "]";
+        }
+
+        return coordPart;
+    }
+
 }
