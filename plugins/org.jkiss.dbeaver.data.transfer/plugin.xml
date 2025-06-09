@@ -120,7 +120,7 @@
             <processor
                 id="stream.geojson"
                 class="org.jkiss.dbeaver.tools.transfer.stream.exporter.DataExporterGeoJSON"
-                description="Export as GeoJSON FeatureCollection"
+                description="Export to GeoJSON file(s)"
                 icon="icons/formats/json.png"
                 label="GeoJSON"
                 contentType="application/geo+json">

@@ -12,14 +12,13 @@ import org.jkiss.dbeaver.model.exec.DBCSession;
 import org.jkiss.dbeaver.model.runtime.DBRProgressMonitor;
 import org.jkiss.dbeaver.tools.transfer.stream.IStreamDataExporterSite;
 import org.jkiss.utils.CommonUtils;
-import org.jkiss.utils.ArrayUtils;
 
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.util.Locale;
 
 /**
- * GeoJSON Exporter
+ * GeoJSON Exporter with improved error handling and performance.
  */
 public class DataExporterGeoJSON extends StreamExporterAbstract {
 
@@ -29,16 +28,26 @@ public class DataExporterGeoJSON extends StreamExporterAbstract {
     private String tableName;
     private int featureCount = 0;
     private boolean printTableName = true;
+    private boolean initialized = false;
 
     @Override
     public void init(IStreamDataExporterSite site) throws DBException {
         super.init(site);
         printTableName = CommonUtils.getBoolean(site.getProperties().get(PROP_PRINT_TABLE_NAME), true);
+        initialized = true;
     }
 
     @Override
     public void exportHeader(DBCSession session) throws DBException, IOException {
+        if (!initialized) {
+            throw new DBException("Exporter not initialized. 'init()' was not called.");
+        }
+
         columns = getSite().getAttributes();
+        if (columns == null || columns.length == 0) {
+            throw new DBException("No columns found for export.");
+        }
+
         tableName = getSite().getSource().getName();
         printHeader();
     }
@@ -56,6 +65,10 @@ public class DataExporterGeoJSON extends StreamExporterAbstract {
 
     @Override
     public void exportRow(DBCSession session, DBCResultSet resultSet, Object[] row) throws DBException, IOException {
+        if (columns == null) {
+            throw new DBException("Exporter not initialized: 'columns' is null. Was init() called?");
+        }
+
         PrintWriter out = getWriter();
 
         if (featureCount > 0) {
@@ -63,22 +76,23 @@ public class DataExporterGeoJSON extends StreamExporterAbstract {
         }
         featureCount++;
 
-        // Identify geometry column – first column with spatial type
         int geomIdx = findGeometryColumnIndex();
         if (geomIdx < 0) {
-            throw new DBException("No geometry column detected for GeoJSON export");
+            throw new DBException("No geometry column detected for GeoJSON export.");
         }
 
         Object geomValue = row[geomIdx];
         if (DBUtils.isNullValue(geomValue)) {
             writeNullFeature(out);
         } else {
-            String geoJson = geomValue.toString(); // Expect ST_AsGeoJSON output or DB client
-            out.write("    { \"type\": \"Feature\", \n");
+            String geoJson = CommonUtils.toString(geomValue);
+
+            out.write("    {\n");
+            out.write("      \"type\": \"Feature\",\n");
             out.write("      \"geometry\": " + geoJson + ",\n");
-            out.write("      \"properties\": {");
+            out.write("      \"properties\": {\n");
             writeProperties(out, row, geomIdx);
-            out.write("      }\n");
+            out.write("\n      }\n");
             out.write("    }");
         }
     }
@@ -89,26 +103,27 @@ public class DataExporterGeoJSON extends StreamExporterAbstract {
 
     private void writeProperties(PrintWriter out, Object[] row, int skipIndex) {
         boolean firstProp = true;
+
         for (int i = 0; i < columns.length; i++) {
             if (i == skipIndex) continue;
+
             DBDAttributeBinding col = columns[i];
-            String key = JSONUtils.escapeJsonString(col.getName());
             Object val = row[i];
+            String key = JSONUtils.escapeJsonString(col.getName());
+
             if (!firstProp) {
-                out.write(", ");
+                out.write(",\n");
             }
             firstProp = false;
-            out.write("\"" + key + "\": ");
+
+            out.write("        \"" + key + "\": ");
             if (DBUtils.isNullValue(val)) {
                 out.write("null");
+            } else if (val instanceof Number || val instanceof Boolean) {
+                out.write(val.toString());
             } else {
-                // Basic scalar types
-                if (val instanceof Number || val instanceof Boolean) {
-                    out.write(val.toString());
-                } else {
-                    String text = CommonUtils.toString(val);
-                    out.write("\"" + JSONUtils.escapeJsonString(text) + "\"");
-                }
+                String text = JSONUtils.escapeJsonString(CommonUtils.toString(val));
+                out.write("\"" + text + "\"");
             }
         }
     }
@@ -116,9 +131,10 @@ public class DataExporterGeoJSON extends StreamExporterAbstract {
     private int findGeometryColumnIndex() {
         for (int i = 0; i < columns.length; i++) {
             var col = columns[i];
-            if (col.getDataKind() == DBPDataKind.ARRAY // spatial types may appear ARRAY-like
-                || col.getTypeName().toLowerCase(Locale.ROOT).contains("geometry")
-                || col.getTypeName().toLowerCase(Locale.ROOT).contains("geography")) {
+            String typeName = col.getTypeName().toLowerCase(Locale.ROOT);
+            if (col.getDataKind() == DBPDataKind.ARRAY ||
+                typeName.contains("geometry") ||
+                typeName.contains("geography")) {
                 return i;
             }
         }
