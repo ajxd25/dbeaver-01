@@ -171,9 +171,6 @@ public class DataExporterGeoJSON extends StreamExporterAbstract {
                     if (isClosedPolygon(coords)) {
                         return "{\"type\":\"Polygon\",\"coordinates\":" + coords + "}";
                     } 
-                    // else {
-                    //     return "{ \"type\": \"MultiPolygon\", \"coordinates\": " + coords + " }";
-                    // }
                 case 4:
                     return "{\"type\":\"MultiPolygon\",\"coordinates\":" + coords + "}";
                 default:
@@ -223,31 +220,34 @@ public class DataExporterGeoJSON extends StreamExporterAbstract {
     }
 
     private String convertWKTtoCoordinates(String wkt) {
-        wkt = wkt.trim().toUpperCase();
-        int startIdx = wkt.indexOf('(');
-        if (startIdx == -1) return "[]";
+        wkt = wkt.trim();
 
-        String coordPart = wkt.substring(startIdx);
-        coordPart = coordPart.replace("(", "[").replace(")", "]");
-        coordPart = coordPart.replaceAll(",\\s*", "],[");
-        coordPart = coordPart.replaceAll("([0-9])\\s+([0-9])", "$1,$2");
+        // Remove type
+        int firstParen = wkt.indexOf('(');
+        if (firstParen == -1) return "[]";
 
-        if (wkt.startsWith("MULTIPOLYGON")) {
-            // Ensure 4-level nesting
-            if (!coordPart.startsWith("[[[[")) {
-                coordPart = "[" + coordPart + "]";
+        String body = wkt.substring(firstParen);
+        // Replace parentheses with brackets safely
+        StringBuilder sb = new StringBuilder();
+        int depth = 0;
+        for (char c : body.toCharArray()) {
+            if (c == '(') {
+                sb.append('[');
+                depth++;
+            } else if (c == ')') {
+                sb.append(']');
+                depth--;
+            } else {
+                sb.append(c);
             }
-        } else if (wkt.startsWith("POLYGON")) {
-            // Ensure 3-level nesting
-            if (!coordPart.startsWith("[[["))
-                coordPart = "[" + coordPart + "]";
-        } else if (wkt.startsWith("MULTILINESTRING") || wkt.startsWith("MULTIPOINT")) {
-            // Wrap with extra []
-            if (!coordPart.startsWith("[["))
-                coordPart = "[" + coordPart + "]";
         }
 
-        return coordPart;
+        // Replace "x y" with "x,y" safely
+        String formatted = sb.toString()
+            .replaceAll(",\\s+", ",") // "1 2,3 4" => "1 2,3 4"
+            .replaceAll("(\\d)\\s+(\\d)", "$1,$2"); // "1 2" => "1,2"
+
+        return formatted;
     }
 
 }
