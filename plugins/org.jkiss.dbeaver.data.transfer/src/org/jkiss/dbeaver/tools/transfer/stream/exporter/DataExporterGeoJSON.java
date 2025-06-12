@@ -55,11 +55,11 @@ public class DataExporterGeoJSON extends StreamExporterAbstract {
     private void printHeader() {
         PrintWriter out = getWriter();
         out.write("{\n");
-        out.write("  \"type\": \"FeatureCollection\",\n");
-        if (printTableName) {
-            out.write("  \"name\": \"" + JSONUtils.escapeJsonString(tableName) + "\",\n");
-        }
-        out.write("  \"features\": [\n");
+        out.write("\"type\":\"FeatureCollection\",\n");
+        // if (printTableName) {
+        //     out.write("\"name\":\"" + JSONUtils.escapeJsonString(tableName) + "\",\n");
+        // }
+        out.write("\"features\":\n[\n");
         featureCount = 0;
     }
 
@@ -90,7 +90,11 @@ public class DataExporterGeoJSON extends StreamExporterAbstract {
 
             if (!geometryString.startsWith("{")) {
                 // Handle WKT
+                // String[] typeAndCoords = convertWKTtoCoordinatesAndType(geometryString);
                 String coords = convertWKTtoCoordinates(geometryString);
+                // String geomType = typeAndCoords[0];
+                // String coords = typeAndCoords[1];
+                // geoJson = "{\"type\":\"" + geomType + "\",\"coordinates\":" + coords + "}";
                 geoJson = inferGeometryFromCoordinates(coords);
             } else {
                 // Handle embedded GeoJSON
@@ -170,9 +174,9 @@ public class DataExporterGeoJSON extends StreamExporterAbstract {
                 case 3:
                     if (isClosedPolygon(coords)) {
                         return "{\"type\":\"Polygon\",\"coordinates\":" + coords + "}";
-                    } 
+                    } else return "{\"type\":\"MultiPolygon\",\"coordinates\":" + "[" + coords + "]" + "}";
                 case 4:
-                    return "{\"type\":\"MultiPolygon\",\"coordinates\":" + coords + "}";
+                    return "{\"type\":\"MultiPolygon\",\"coordinates\":" + "[" + coords + "]" + "}";
                 default:
                     return "null";
             }
@@ -198,17 +202,62 @@ public class DataExporterGeoJSON extends StreamExporterAbstract {
         try {
             if (!coords.startsWith("[[[") || !coords.endsWith("]]]")) return false;
 
-            String trimmed = coords.substring(1, coords.length() - 1); // remove outer []
-            String[] rings = trimmed.split("\\],\\[");
-            if (rings.length == 0) return false;
+            // Remove outermost brackets
+            String trimmed = coords.substring(1, coords.length() - 1);
 
-            String first = rings[0].replaceAll("[\\[\\]]", "");
-            String last = rings[rings.length - 1].replaceAll("[\\[\\]]", "");
-            return first.equals(last);
+            // Parse coordinate sets manually
+            int len = trimmed.length();
+            StringBuilder coord = new StringBuilder();
+            String[] coordSets = new String[1000]; // max 1000 coordinate pairs
+            int coordCount = 0;
+            int bracketDepth = 0;
+
+            for (int i = 0; i < len; i++) {
+                char c = trimmed.charAt(i);
+
+                if (c == '[') {
+                    if (bracketDepth == 1) coord.setLength(0); // start new coordinate
+                    bracketDepth++;
+                } else if (c == ']') {
+                    bracketDepth--;
+                    if (bracketDepth == 1) {
+                        if (coordCount < coordSets.length) {
+                            coordSets[coordCount++] = coord.toString().trim();
+                        }
+                    }
+                } else if (bracketDepth == 2) {
+                    coord.append(c);
+                }
+            }
+
+            if (coordCount < 2) return false;
+
+            String first = coordSets[0];
+            String last = coordSets[coordCount - 1];
+
+            if (!first.equals(last)) {
+                return false; // First and last not equal => not a closed ring
+            }
+
+            // Count how many times first coordinate appears
+            int repeatCount = 0;
+            for (int i = 0; i < coordCount; i++) {
+                if (first.equals(coordSets[i])) {
+                    repeatCount++;
+                }
+            }
+
+            if (repeatCount == 2) {
+                return true;
+            } else {
+                return false;
+            }
         } catch (Exception e) {
             return false;
         }
     }
+
+
 
     private String extractCoordinatesFromJson(String geoJsonStr) {
         int coordIdx = geoJsonStr.indexOf("\"coordinates\"");
@@ -221,33 +270,96 @@ public class DataExporterGeoJSON extends StreamExporterAbstract {
 
     private String convertWKTtoCoordinates(String wkt) {
         wkt = wkt.trim();
+        int startIdx = wkt.indexOf('(');
+        if (startIdx == -1) return "[]";
 
-        // Remove type
-        int firstParen = wkt.indexOf('(');
-        if (firstParen == -1) return "[]";
-
-        String body = wkt.substring(firstParen);
-        // Replace parentheses with brackets safely
-        StringBuilder sb = new StringBuilder();
-        int depth = 0;
-        for (char c : body.toCharArray()) {
-            if (c == '(') {
-                sb.append('[');
-                depth++;
-            } else if (c == ')') {
-                sb.append(']');
-                depth--;
-            } else {
-                sb.append(c);
-            }
-        }
-
-        // Replace "x y" with "x,y" safely
-        String formatted = sb.toString()
-            .replaceAll(",\\s+", ",") // "1 2,3 4" => "1 2,3 4"
-            .replaceAll("(\\d)\\s+(\\d)", "$1,$2"); // "1 2" => "1,2"
-
-        return formatted;
+        String coordPart = wkt.substring(startIdx);
+        coordPart = coordPart.replace("(", "[").replace(")", "]");
+        coordPart = coordPart.replaceAll(",\\s*", "],[").replaceAll("([\\d\\.\\-]+)\\s+([\\d\\.\\-]+)", "$1,$2");
+        return coordPart;
     }
-
 }
+
+// --- Functions for fututre use ---
+
+    // private String[] convertWKTtoCoordinatesAndType(String wkt) {
+    //     wkt = wkt.trim();
+
+    //     int firstParen = wkt.indexOf('(');
+    //     if (firstParen == -1) return new String[]{"UNKNOWN", "[]"};
+
+    //     String type = wkt.substring(0, firstParen).trim().toUpperCase(Locale.ROOT);
+    //     String body = wkt.substring(firstParen);
+
+    //     // Save original body for ring closure check
+    //     String rawBody = body.replaceAll("[\\s\\n]+", ""); // strip spaces/newlines
+
+    //     // Convert to brackets for GeoJSON
+    //     StringBuilder sb = new StringBuilder();
+    //     for (char c : body.toCharArray()) {
+    //         if (c == '(') {
+    //             sb.append('[');
+    //         } else if (c == ')') {
+    //             sb.append(']');
+    //         } else {
+    //             sb.append(c);
+    //         }
+    //     }
+
+    //     String formatted = sb.toString()
+    //         .replaceAll(",\\s+", ",")
+    //         .replaceAll("(\\d)\\s+(\\d)", "$1,$2");
+
+    //     if (type.equals("MULTIPOLYGON")) {
+    //         int topLevelGroups = countTopLevelPolygons(formatted);
+    //         if (topLevelGroups == 1) {
+    //             // It's a single polygon, strip one level of brackets
+    //             // formatted = formatted.substring(1, formatted.length() - 1);
+    //             type = "POLYGON";
+    //         } else {
+    //             // Ensure it has 4 bracket layers
+    //             formatted = "[" + formatted + "]";
+    //         }
+    //     }
+
+    //     return new String[]{toTitleCaseGeometry(type.toLowerCase(Locale.ROOT)), formatted};
+    // }
+
+    // private String capitalizeFirstLetter(String input) {
+    //     if (input == null || input.isEmpty()) return input;
+    //     return input.substring(0, 1).toUpperCase() + input.substring(1).toLowerCase();
+    // }
+
+    // private int countTopLevelPolygons(String coords) {
+    //     int count = 0, depth = 0;
+    //     for (int i = 0; i < coords.length(); i++) {
+    //         char c = coords.charAt(i);
+    //         if (c == '[') {
+    //             depth++;
+    //             if (depth == 2) count++; // only count depth-2: [ [ [ ... ] ] ]
+    //         } else if (c == ']') {
+    //             depth--;
+    //         }
+    //     }
+    //     return count;
+    // }
+
+//     private String toTitleCaseGeometry(String input) {
+//         // Handles things like "multipolygon" -> "MultiPolygon"
+//         StringBuilder result = new StringBuilder();
+//         for (String part : input.split("(?=[A-Z])|_")) {
+//             if (part.isEmpty()) continue;
+//             result.append(part.substring(0, 1).toUpperCase());
+//             if (part.length() > 1) result.append(part.substring(1).toLowerCase());
+//         }
+
+//         // Special handling for known geometry types with camel casing
+//         switch (result.toString().toLowerCase()) {
+//             case "multipolygon": return "MultiPolygon";
+//             case "multilinestring": return "MultiLineString";
+//             case "multipoint": return "MultiPoint";
+//             case "linestring": return "LineString";
+//             default: return capitalizeFirstLetter(input);
+//         }
+//     }
+// }
